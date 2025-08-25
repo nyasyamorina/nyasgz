@@ -1,6 +1,8 @@
 pub const gzip = @import("gzip.zig");
+pub const deflate = @import("deflate.zig");
 
 test {
-    @import("std").testing.refAllDeclsRecursive(@This());
+    const testing = @import("std").testing;
+    testing.refAllDeclsRecursive(@This());
 }
 

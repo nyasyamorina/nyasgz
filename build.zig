@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const nyasgz = b.addModule("nyasgz", .{
         .root_source_file = b.path("src/nyasgz.zig"),
         .target = target,
-    });    
+    });
 
     const exe = b.addExecutable(.{
         .name = "nyasgz-exe",
@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // run
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -30,6 +31,7 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // test
     const nyasgz_tests = b.addTest(.{
         .root_module = nyasgz,
     });
@@ -43,5 +45,19 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_nyasgz_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    // check
+    const nyasgz_check = b.addLibrary(.{
+        .name = "nyasgz",
+        .root_module = nyasgz,
+    });
+    const exe_check = b.addExecutable(.{
+        .name = "nyasgz-exe",
+        .root_module = exe.root_module,
+    });
+
+    const check = b.step("check", "Check if all compile");
+    check.dependOn(&nyasgz_check.step);
+    check.dependOn(&exe_check.step);
 }
 
