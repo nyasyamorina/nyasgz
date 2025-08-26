@@ -1,11 +1,12 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const deflate = @import("deflate.zig");
 
-const big_endian = builtin.cpu.arch.endian() == .big;
-const Reader = std.Io.Reader;
-const File = std.fs.File;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const big_endian = builtin.cpu.arch.endian() == .big;
+const File = std.fs.File;
+const Reader = std.Io.Reader;
 
 
 pub const GzError = error {
@@ -159,6 +160,7 @@ pub const GzEndInfo = extern struct {
 pub const GzFile = struct {
     header: GzHeaderInfo,
     end: GzEndInfo,
+    decoder: deflate.read.Decoder,
 
     pub const InitError = Allocator.Error || Reader.Error || File.Reader.SeekError || File.Reader.SizeError || GzError;
     pub fn init(a: Allocator, r: *File.Reader) InitError!GzFile {
@@ -180,11 +182,13 @@ pub const GzFile = struct {
         return .{
             .header = header,
             .end = end,
+            .decoder = .init(a, &r.interface),
         };
     }
 
     pub fn deinit(self: GzFile, a: Allocator) void {
         self.header.deinit(a);
+        self.decoder.deinit(a);
     }
 };
 
