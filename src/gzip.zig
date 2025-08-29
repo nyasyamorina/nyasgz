@@ -182,7 +182,7 @@ pub const GzFile = struct {
         return .{
             .header = header,
             .end = end,
-            .decoder = .init(a, &r.interface),
+            .decoder = try .init(a, &r.interface),
         };
     }
 

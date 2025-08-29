@@ -34,6 +34,36 @@ pub const code_distance = [_]struct {u8, u16} {
     .{13, 16385}, .{13, 24577},
 };
 
+/// code_length (0..15),
+/// 16: repeat previous code length (2-extra-bit + 3) times,
+/// 17: repeat 0 code length (3-extra-bit + 3) times,
+/// 18: repeat 0 code length (7-extra-bit + 11) times,
+pub const code_length_codes = [_]u5 {
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+};
+
+/// total number of literal values (0..255), block end (256) and length values (257..285)
+pub const literal_length_count = 286;
+/// total number of distance value (0..29)
+pub const distance_count = 30;
+/// (0..18)
+pub const code_length_code_count = 19;
+
+pub const max_code_length = 15;
+
+/// used to build fixed literal/length Huffman tree,
+/// each tuple stores a continue slice of literal/length info,
+/// the first is the code length, the second is the length of the slice.
+pub const fixed_lit_tree_info = [_]struct {u4, u16} {
+    .{8, 144 - 0 }, .{9, 256 - 144}, .{7, 280 - 256}, .{8, literal_length_count - 280},
+};
+/// used to build fixed distance Huffman tree,
+/// each tuple stores a continue slice of distance info,
+/// the first is the code length, thhe second is the length of the slice.
+pub const fixed_distance_tree_info = [_]struct {u4, u5} {
+    .{5, distance_count - 0},
+};
+
 
 test "check code tables" {
     const checkCodeTable = struct {
