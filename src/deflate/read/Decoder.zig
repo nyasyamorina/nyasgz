@@ -4,6 +4,7 @@ const std = @import("std");
 const Decoder = @This();
 const Bit = @import("Bit.zig");
 const common = @import("../common.zig");
+const Dictionary = @import("../Dictionary.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -16,6 +17,7 @@ const Reader = std.Io.Reader;
 bit: Bit,
 is_last_block: bool,
 huffman: *Huffman,
+dictionary: *Dictionary,
 state: State,
 err: ?Error,
 
@@ -29,7 +31,7 @@ pub const StateTag = std.meta.Tag(State);
 
 pub const NonCompressedState = struct {
     length: u16,
-    current: u16 = 0,
+    count: u16 = 0,
 
     pub fn init(b: *Bit) Reader.Error!NonCompressedState {
         b.drainCurrentByte();
@@ -42,17 +44,21 @@ pub const NonCompressedState = struct {
 
     /// null means the block is ended
     pub fn readByteMayEnd(self: *NonCompressedState, b: *Bit) Reader.Error!?u8 {
-        self.current += 1;
-        if (self.current >= self.length) return null;
+        if (self.count >= self.length) return null;
 
         var byte: u8 = undefined;
         try b.inner.readSliceAll(@ptrCast(&byte));
+        self.count += 1;
         return byte;
     }
 };
 
 pub const CompressedState = struct {
     huffman: *Huffman,
+    backwarding: ?struct {
+        backward: Huffman.Action.Backward,
+        count: u9 = 0,
+    } = null,
 
     pub fn initFixed(h: *Huffman) CompressedState {
         h.* = .fixed;
@@ -69,10 +75,28 @@ pub const CompressedState = struct {
     }
 
     /// null means the block is ended
-    pub fn readByteMayEnd(self: *CompressedState, b: *Bit) (Reader.Error || Error)!?u8 {
-        _ = self;
-        _ = b;
-        return null;
+    pub fn readByteMayEnd(self: *CompressedState, b: *Bit, d: *Dictionary) (Reader.Error || Error)!?u8 {
+        while (true) {
+            if (self.backwarding) |bw| {
+                if (bw.count >= bw.backward.length) {
+                    self.backwarding = null;
+                } else {
+                    self.backwarding.?.count += 1;
+                    if (d.get(bw.backward.distance)) |byte| {
+                        return byte;
+                    } else {
+                        return Error.InvalidDistanceCode;
+                    }
+                }
+            }
+
+            const action = try self.huffman.readAction(b);
+            switch (action) {
+                .literal => |byte| return byte,
+                .block_end => return null,
+                .backward => |bw| self.backwarding = .{ .backward = bw },
+            }
+        }
     }
 };
 
@@ -82,7 +106,7 @@ pub const Huffman = struct {
 
     const CodeLengthTree = Tree(u3, u5, common.code_length_code_count);
     /// Huffman tree for literal/length
-    pub const LitTree = Tree(u4, u16, common.literal_length_count);
+    pub const LitTree = Tree(u4, u9, common.literal_length_count);
     /// Huffman tree for distance
     pub const DistanceTree = Tree(u4, u5, common.distance_count);
 
@@ -165,9 +189,10 @@ pub const Huffman = struct {
                         if (idx >= self.values.len) {
                             return;
                         } else {
-                            cl = self.values[idx].code_length;
+                            const next_cl = self.values[idx].code_length;
                             idx_s = idx;
-                            code_s = (code_s + len) << 1;
+                            code_s = (code_s + len) << (next_cl - cl);
+                            cl = next_cl;
                         }
                     } else {
                         idx += 1;
@@ -175,7 +200,7 @@ pub const Huffman = struct {
                 }
             }
 
-            pub fn isValid(self: @This()) bool {
+            pub fn ensureValid(self: @This()) Error!void {
                 var code_len: CodeLength = 1;
                 var max_code_len: CodeLength = 0;
                 while (code_len != 0) : (code_len +%= 1) {
@@ -185,15 +210,13 @@ pub const Huffman = struct {
                     // check code length
                     const curr_max_code = codes.code_start + (codes.length - 1);
                     const curr_max_code_len = @typeInfo(Code).int.bits - @clz(curr_max_code);
-                    if (curr_max_code_len > code_len) return false;
+                    if (curr_max_code_len > code_len) return Error.InvalidDynamicHuffmanBlock;
                 }
                 // check the max code with max code length should be all 1s
-                if (max_code_len == 0) return false; // no codes
+                if (max_code_len == 0) return Error.InvalidDynamicHuffmanBlock; // no codes
                 const codes = self.codes[max_code_len - 1];
                 const max_code = codes.code_start + (codes.length - 1);
-                if (max_code & (max_code +% 1) != 0) return false; // max_code + 1 is not a power of 2, means max_code is not all 1s
-                // all checks passed
-                return true;
+                if (max_code & (max_code +% 1) != 0) return Error.InvalidDynamicHuffmanBlock;
             }
 
             pub fn decode(self: @This(), b: *Bit) (Reader.Error || Error)!Value {
@@ -293,7 +316,7 @@ pub const Huffman = struct {
         var cl_extra: CodeLengthTreeExtra = .{ .tree = &cl_tree };
         try cl_extra.readCodeLengthTree(b, clcl_count);
         cl_tree.buildCodes();
-        if (!cl_tree.isValid()) return Error.InvalidDynamicHuffmanBlock;
+        try cl_tree.ensureValid();
 
         // read lit tree
         var idx: u16 = 0;
@@ -303,12 +326,12 @@ pub const Huffman = struct {
                 action.fill_count -= 1;
                 idx += 1;
             }) {
-                self.lit.values[idx] = .{ .value = idx, .code_length = action.code_length };
+                self.lit.values[idx] = .{ .value = @truncate(idx), .code_length = action.code_length };
             }
         }
         if (idx > lit_count) return Error.InvalidDynamicHuffmanBlock; // should read exactlly
         while (idx < common.literal_length_count) : (idx += 1) {
-            self.lit.values[idx] = .{ .value = idx, .code_length = 0 };
+            self.lit.values[idx] = .{ .value = @truncate(idx), .code_length = 0 };
         }
 
         // read distance tree
@@ -329,9 +352,43 @@ pub const Huffman = struct {
         }
 
         self.distance.buildCodes();
-        if (!self.distance.isValid()) return Error.InvalidDynamicHuffmanBlock;
+        try self.distance.ensureValid();
         self.lit.buildCodes();
-        if (!self.lit.isValid()) return Error.InvalidDynamicHuffmanBlock;
+        try self.lit.ensureValid();
+    }
+
+    pub const Action = union(enum) {
+        literal: u8,
+        block_end: void,
+        backward: Backward,
+
+        pub const Backward = struct {
+            length: u9,
+            distance: u15,
+        };
+    };
+
+    pub fn readAction(self: Huffman, b: *Bit) (Reader.Error || Error)!Action {
+        const lit = try self.lit.decode(b);
+        if (lit < 256) {
+            return .{ .literal = @truncate(lit) };
+        } else if (lit == 256) {
+            return .block_end;
+        } else if (lit < common.literal_length_count) {
+            const extra_len_count, const length_start = common.length_table[lit - 257];
+            const extra_len = try b.readLeBits(extra_len_count);
+            const length = length_start + @as(u9, @truncate(extra_len));
+
+            const dist_code = try self.distance.decode(b);
+            if (dist_code >= common.distance_count) return Error.InvalidDistanceCode;
+            const extra_dist_len, const distance_start = common.distance_table[dist_code];
+            const extra_dist = try b.readLeBits(extra_dist_len);
+            const distance = distance_start + @as(u15, @truncate(extra_dist));
+
+            return .{ .backward = .{ .length = length, .distance = distance } };
+        } else {
+            return Error.InvalidLiteralLengthCode;
+        }
     }
 };
 
@@ -340,13 +397,18 @@ pub const Error = error {
     NonCompressedBlockLengthCheckFailed,
     InvalidDynamicHuffmanBlock,
     InvalidHuffmanCode,
+    InvalidLiteralLengthCode,
+    InvalidDistanceCode,
 };
 
 pub fn init(a: Allocator, r: *Reader) Allocator.Error!Decoder {
+    const dict = try a.create(Dictionary);
+    dict.init();
     return .{
         .bit = .init(r),
         .is_last_block = false,
         .huffman = try a.create(Huffman),
+        .dictionary = dict,
         .state = .rest,
         .err = null,
     };
@@ -354,30 +416,38 @@ pub fn init(a: Allocator, r: *Reader) Allocator.Error!Decoder {
 
 pub fn deinit(self: Decoder, a: Allocator) void {
     a.destroy(self.huffman);
+    a.destroy(self.dictionary);
 }
 
 pub fn isFinished(self: Decoder) bool {
     return self.is_last_block and self.state == .rest;
 }
 
-/// assume the reading byte always available, please check end usin `isFinished()`
-pub fn readByte(self: *Decoder) Reader.Error!u8 {
+/// null means deflate stream ended
+pub fn readByte(self: *Decoder) Reader.Error!?u8 {
     while (true) {
         if (self.state == .rest) {
-            if (self.is_last_block) return Reader.Error.EndOfStream;
+            if (self.is_last_block) return null;
             try self.startNextBlock();
         }
 
         const may_byte = switch (self.state) {
             .rest => unreachable,
             .non_compressed => |*state| state.readByteMayEnd(&self.bit),
-            .compressed => |*state| state.readByteMayEnd(&self.bit),
+            .compressed => |*state| state.readByteMayEnd(&self.bit, self.dictionary),
         } catch |err| return self.absorbErr(err);
 
-        if (may_byte) |byte| return byte;
-        self.state = .rest;
+        if (may_byte) |byte| {
+            self.dictionary.append(byte);
+            return byte;
+        } else {
+            self.state = .rest;
+            continue;
+        }
     }
 }
+
+// TODO: better deflate stream ending
 
 fn startNextBlock(self: *Decoder) Reader.Error!void {
     self.is_last_block = try self.bit.readLeBits(1) != 0;
@@ -428,13 +498,13 @@ test "read dynamic Huffman codes" {
         0x24, 0x27, 0x9F, 0x8A,
     };
     var r: Reader = .fixed(&content);
-    var br: Bit = .init(&r);
-    _ = try br.readLeBits(3); // 100
+    var b: Bit = .init(&r);
+    _ = try b.readLeBits(3); // 100
 
     var huffman: Huffman = undefined;
-    try huffman.readFrom(&br);
+    try huffman.readFrom(&b);
 
-    try expectEqual(35, try huffman.lit.decode(&br));
+    try expectEqual(35, try huffman.lit.decode(&b));
     // TODO: more robust tests
 }
 

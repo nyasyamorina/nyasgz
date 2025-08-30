@@ -169,7 +169,7 @@ pub const GzFile = struct {
 
         // end info should be at the end of file
         const end_info_pos = try r.getSize() - 8;
-        const curr_pos = r.pos;
+        const curr_pos = r.logicalPos();
         try r.seekTo(end_info_pos);
         const end: GzEndInfo = try .readFrom(&r.interface);
         try r.seekTo(curr_pos);
@@ -234,8 +234,8 @@ test "GzFile" {
     const rfile = try cwd.openFile(filename, .{});
     defer rfile.close();
     var r = rfile.reader(&.{});
-
     const gz_file: GzFile = try .init(std.testing.allocator, &r);
+
     defer gz_file.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(true, gz_file.header.may_text_content);
@@ -248,5 +248,35 @@ test "GzFile" {
     try std.testing.expectEqual(0x6611, gz_file.header.crc16.?);
     try std.testing.expectEqual(0x22336611, gz_file.end.crc32);
     try std.testing.expectEqual(0x66778899, gz_file.end.isize);
+}
+
+test "toml.hpp.gz" { // a simple text sample from https://github.com/ToruNiina/toml11
+    const gz_filename = "toml.hpp.gz";
+    const file = std.fs.cwd().openFile(gz_filename, .{}) catch {
+        std.debug.print("could not find file \"" ++ gz_filename ++ "\", skip test \"toml.hpp.gz\"", .{});
+        return;
+    };
+    defer file.close();
+    var buf: [4 * 1024]u8 = undefined;
+    var r = file.reader(&buf);
+
+    const out_filename = "out.toml.hpp";
+    const wfile = try std.fs.cwd().createFile(out_filename, .{});
+    defer wfile.close();
+    var buf2: [4 * 1024]u8 = undefined;
+    var w = wfile.writer(&buf2);
+    defer w.interface.flush() catch {};
+
+    var gz: GzFile = try .init(std.testing.allocator, &r);
+    defer gz.deinit(std.testing.allocator);
+
+    while (true) {
+        const may_byte = try gz.decoder.readByte();
+        if (may_byte) |byte| {
+            try w.interface.writeAll(@ptrCast(&byte));
+        } else {
+            break; // TODO: better deflate stream ending
+        }
+    }
 }
 

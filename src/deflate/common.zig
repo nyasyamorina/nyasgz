@@ -3,7 +3,7 @@
 ///
 /// Example: code = 277, extra bits = 9, then
 /// the base length = code_length[277-257].@"1" = 67, and the actual length = 67 + 9.
-pub const code_length = [_]struct {u8, u16} {
+pub const length_table = [_]struct {u4, u9} {
     .{0, 3}, .{0, 4}, .{0, 5}, .{0, 6}, .{0, 7}, .{0, 8}, .{0, 9}, .{0, 10},
     .{1, 11}, .{1, 13}, .{1, 15}, .{1, 17}, 
     .{2, 19}, .{2, 23}, .{2, 27}, .{2, 31},
@@ -17,7 +17,7 @@ pub const code_length = [_]struct {u8, u16} {
 /// the elements are tuples of extra bit count and the base distance when extra bits = 0.
 /// Example: code = 11, extra bits = 12, then
 /// the base length = code_distance[11].@"1" = 49, the actual distance = 49 + 12
-pub const code_distance = [_]struct {u8, u16} {
+pub const distance_table = [_]struct {u4, u15} {
     .{0, 1}, .{0, 2}, .{0, 3}, .{0, 4},
     .{1, 5}, .{1, 7},
     .{2, 9}, .{2, 13},
@@ -54,7 +54,7 @@ pub const max_code_length = 15;
 /// used to build fixed literal/length Huffman tree,
 /// each tuple stores a continue slice of literal/length info,
 /// the first is the code length, the second is the length of the slice.
-pub const fixed_lit_tree_info = [_]struct {u4, u16} {
+pub const fixed_lit_tree_info = [_]struct {u4, u9} {
     .{8, 144 - 0 }, .{9, 256 - 144}, .{7, 280 - 256}, .{8, literal_length_count - 280},
 };
 /// used to build fixed distance Huffman tree,
@@ -67,19 +67,19 @@ pub const fixed_distance_tree_info = [_]struct {u4, u5} {
 
 test "check code tables" {
     const checkCodeTable = struct {
-        fn foo(table: []const struct {u8, u16}) !void {
+        fn foo(comptime Value: type, table: []const struct {u4, Value}) !void {
             const expectEqual = @import("std").testing.expectEqual;
             var idx: u16 = 1;
             while (idx < table.len) : (idx += 1) {
                 const check = table[idx - 1];
                 const expect = table[idx].@"1";
-                if (expect == 258) continue; // exception for the last element in code_length
-                try expectEqual(table[idx].@"1", check.@"1" + (@as(u16, 1) << @truncate(check.@"0")));
+                if (expect == 258) continue; // exception for the last element in length_table
+                try expectEqual(table[idx].@"1", check.@"1" + (@as(Value, 1) << @truncate(check.@"0")));
             }
         }
     }.foo;
 
-    try checkCodeTable(&code_length);
-    try checkCodeTable(&code_distance);
+    try checkCodeTable(u9, &length_table);
+    try checkCodeTable(u15, &distance_table);
 }
 
