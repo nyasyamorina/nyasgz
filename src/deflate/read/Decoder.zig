@@ -447,6 +447,7 @@ pub fn readByte(self: *Decoder) Reader.Error!?u8 {
     }
 }
 
+// TODO: integrade with `Reader` interface
 // TODO: better deflate stream ending
 
 fn startNextBlock(self: *Decoder) Reader.Error!void {

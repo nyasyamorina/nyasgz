@@ -157,13 +157,13 @@ pub const GzEndInfo = extern struct {
 };
 
 
-pub const GzFile = struct {
+pub const FileReader = struct {
     header: GzHeaderInfo,
     end: GzEndInfo,
     decoder: deflate.read.Decoder,
 
     pub const InitError = Allocator.Error || Reader.Error || File.Reader.SeekError || File.Reader.SizeError || GzError;
-    pub fn init(a: Allocator, r: *File.Reader) InitError!GzFile {
+    pub fn init(a: Allocator, r: *File.Reader) InitError!FileReader {
         const header: GzHeaderInfo = try .readFrom(a, &r.interface);
         errdefer header.deinit(a);
 
@@ -186,7 +186,7 @@ pub const GzFile = struct {
         };
     }
 
-    pub fn deinit(self: GzFile, a: Allocator) void {
+    pub fn deinit(self: FileReader, a: Allocator) void {
         self.header.deinit(a);
         self.decoder.deinit(a);
     }
@@ -234,7 +234,7 @@ test "GzFile" {
     const rfile = try cwd.openFile(filename, .{});
     defer rfile.close();
     var r = rfile.reader(&.{});
-    const gz_file: GzFile = try .init(std.testing.allocator, &r);
+    const gz_file: FileReader = try .init(std.testing.allocator, &r);
 
     defer gz_file.deinit(std.testing.allocator);
 
@@ -267,16 +267,12 @@ test "toml.hpp.gz" { // a simple text sample from https://github.com/ToruNiina/t
     var w = wfile.writer(&buf2);
     defer w.interface.flush() catch {};
 
-    var gz: GzFile = try .init(std.testing.allocator, &r);
+    var gz: FileReader = try .init(std.testing.allocator, &r);
     defer gz.deinit(std.testing.allocator);
 
     while (true) {
-        const may_byte = try gz.decoder.readByte();
-        if (may_byte) |byte| {
-            try w.interface.writeAll(@ptrCast(&byte));
-        } else {
-            break; // TODO: better deflate stream ending
-        }
+        const byte = try gz.decoder.readByte() orelse break; // TODO: better deflate stream ending
+        try w.interface.writeAll(@ptrCast(&byte));
     }
 }
 
